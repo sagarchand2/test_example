@@ -146,6 +146,7 @@ from common.harness_base import (Harness, finalize,             # noqa: E402
                                  score_error, write_env)
 
 BASELINE_PATH = TASK_DIR / "prompt" / "input.json"
+SOLUTION_REFERENCE_PATH = HERE / "solution_reference.json"
 
 PASS, PARTIAL, FAIL, UNVERIFIABLE = "PASS", "PARTIAL", "FAIL", "UNVERIFIABLE"
 
@@ -290,6 +291,12 @@ TOL = {
     # would leave several percent of trigger deformation unscored.
     "fp_perfect": 0.01,
     "fp_zero": 0.08,
+
+    # Finished-housing reference comparison for C5.
+    # Geometry-only: volume, area and inertia; no body/feature names.
+    "housing_ref_fp_perfect": 0.00010,
+    "housing_ref_fp_zero": 0.00150,
+    "housing_ref_bbox_mm": 0.10,
     # -- body matching ------------------------------------------------------
     "match_fp_weight": 1.0,      # cost per unit of fingerprint distance
     "match_pos_weight_per_mm": 0.02,   # cost per mm of positional residual
@@ -1182,6 +1189,7 @@ def ungradable_reason(baseline, measured):
 class Grader:
     def __init__(self, baseline, measured):
         self.bl = baseline
+        self.ref = load_solution_reference()
         # A bodily translation along X is normalised away before anything is
         # compared, so a part with a reset origin is judged on its geometry.
         measured, self.plane_shift_m = normalise_plane_offset(baseline,
@@ -2226,6 +2234,49 @@ class Grader:
         det["worst_fingerprint_drift"] = round(worst_fp, 5)
         det["reshaped"] = reshaped
 
+        # 5.3 -- finished housing geometry.
+        # The housing cannot be compared with the seed because the requested
+        # widening legitimately remodels it. Compare it with the finished
+        # reference instead. Selection is by geometry (largest volumes), not
+        # feature names or body IDs.
+        ref_bodies = sorted(
+            self.ref["bodies"], key=lambda b: -b["volume_m3"]
+        )[:2]
+        cand_bodies = sorted(
+            self.ms["bodies"], key=lambda b: -b["volume_m3"]
+        )[:2]
+        housing_dists = [
+            fp_distance(rb, cb)
+            for rb, cb in zip(ref_bodies, cand_bodies)
+        ]
+        worst_housing_fp = max(housing_dists) if housing_dists else 0.0
+
+        bbox_drift_mm = 0.0
+        for rb, cb in zip(ref_bodies, cand_bodies):
+            for rv, cv in zip(rb["bbox_m"], cb["bbox_m"]):
+                bbox_drift_mm = max(
+                    bbox_drift_mm, abs(rv - cv) * MM
+                )
+
+        same_housing_envelope = (
+            bbox_drift_mm <= TOL["housing_ref_bbox_mm"]
+        )
+
+        housing_shape = score_error(
+            worst_housing_fp,
+            TOL["housing_ref_fp_perfect"],
+            TOL["housing_ref_fp_zero"],
+        )
+
+        det["finished_housing"] = {
+            "fingerprint_distances":
+                [round(d, 7) for d in housing_dists],
+            "worst_fingerprint_drift": round(worst_housing_fp, 7),
+            "score": round(housing_shape, 4),
+            "evidence":
+                "finished geometry: volume, surface area and inertia",
+        }
+
         # 5.3 -- REPORTED, NOT CHARGED: what the exemption hides.
         #
         # The exemption above is load-bearing and correct -- the reference
@@ -2289,19 +2340,29 @@ class Grader:
         # to 7.750 -- a quarter of a point, the most an unrequested change
         # could ever cost. Either half failing means an unrequested change
         # was made, so the criterion now reports the one that failed.
-        score = min(span, shape)
+        controls_are_correct = self.c2_spacing()["score"] >= 0.999
+
+        charge_housing_reference = (
+            same_housing_envelope and controls_are_correct
+        )
+
+        score = (
+            min(span, shape, housing_shape)
+            if charge_housing_reference
+            else min(span, shape)
+        )
         return {"score": round(score, 4), "status": status_of(score),
                 "components": {"yz_spans": round(span, 4),
-                               "body_shapes": round(shape, 4)},
+               "body_shapes": round(shape, 4),
+               "finished_housing": round(housing_shape, 4)},
                 "detail": det,
-                "caveat": "housing, button diamonds and centre buttons are "
-                          "exempt from the reshape check -- the reference "
-                          "remodels them.  Sticks/triggers/bumpers must keep "
-                          "their shape.  Scored by weight, not as a gate.  "
-                          "AN UNREQUESTED EDIT INSIDE AN EXEMPT BODY IS NOT "
-                          "CAUGHT HERE: see detail.tree_and_faces for the "
-                          "trace it leaves, and DATASET_ISSUES for why it "
-                          "is reported rather than charged."}
+        "caveat": "housing, button diamonds and centre buttons are "
+                      "exempt from the seed reshape check because the "
+                      "requested edit legitimately remodels them. "
+                      "Finished housing geometry is compared with the "
+                      "reference when the housing envelope and control "
+                      "layout indicate that comparison is applicable, "
+                      "avoiding double penalties for other known defects."}
 
     # -- assemble --------------------------------------------------------
     def grade(self):
@@ -2625,6 +2686,10 @@ BASELINE = HB.Baseline(BASELINE_PATH, BASELINE_SCHEMA,
 
 def load_baseline():
     return BASELINE.load()
+
+def load_solution_reference():
+    with open(SOLUTION_REFERENCE_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def capture_baseline(path, out_path=None):
