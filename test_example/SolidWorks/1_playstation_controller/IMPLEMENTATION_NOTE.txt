@@ -1,0 +1,34 @@
+Implementation Note — SolidWorks PS3 Controller Grading Harness
+
+I reviewed and updated the grading harness for the SolidWorks PS3 controller task to improve its ability to distinguish the correct reference solution from adversarial submissions while preserving continuous, component-level scoring.
+
+The primary issue identified was in the “no unrequested changes” criterion. The original harness intentionally exempted the housing from the seed-based reshape comparison because the requested controller widening legitimately modifies the housing. However, this created a blind spot where a candidate containing an additional unintended housing cut could still receive full credit.
+
+To address this, I added a geometry-based finished-housing reference comparison. The updated check compares the candidate's finished housing against the supplied solution using geometric properties including volume, surface area, inertia, and bounding-box measurements. The comparison does not depend on feature names or body IDs, maintaining the geometry-based grading requirement. The final harness explicitly describes the grading approach as geometry-only.
+
+A frozen measurement of the supplied solution is stored in solution_reference.json and loaded by the harness as the finished-geometry reference. The reference itself records a successful rebuild with zero errors.
+
+The finished-housing comparison is applied conditionally when the candidate has the expected control layout and matching housing envelope. This prevents the new check from creating duplicate penalties for candidates whose primary defect is already captured by another rubric component, such as incorrect widening or an incorrectly mirrored button cluster. Continuous tolerances are used so near-miss geometry can receive partial credit rather than being treated as a binary pass/fail.
+
+Validation Results
+
+The final harness was validated in SolidWorks 2026 SP3.2 Academic on Windows against the supplied solution and all eight adversarial models.
+
+Model	Score
+Supplied solution	8.0000 / 8.0
+Feature tree with errors	0.7689 / 8.0
+Missing glyphs	7.0000 / 8.0
+Only one button cluster mirrored	6.0625 / 8.0
+Text mirrored incorrectly	6.3000 / 8.0
+Unrequested change elsewhere	7.7915 / 8.0
+Unwidened shell with correct clusters	0.4965 / 8.0
+Widened 15 mm with clusters at original spacing	2.5000 / 8.0
+Widened by 30 mm	6.5000 / 8.0
+
+The supplied solution retains the full 8.0/8.0, while every adversarial model loses credit for the component(s) associated with its defect. In particular, the previously undetected unrequested housing modification now receives a partial score for “no unrequested changes” rather than full credit.
+
+Final Submission Files:
+
+tests/task/harness/harness.py
+tests/task/harness/solution_reference.json
+IMPLEMENTATION_NOTE.txt
